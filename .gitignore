@@ -10,3 +10,4 @@ long_term_tsf/.gitignore
 pic/
 setup.py
 long_term_tsf/data/
+ckpt/
