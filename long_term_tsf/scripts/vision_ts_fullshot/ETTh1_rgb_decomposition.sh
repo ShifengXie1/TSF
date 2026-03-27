@@ -6,9 +6,9 @@ export CONTEXT_LEN=1152
 export PERIODICITY=24
 export ALIGN_CONST=0.4
 export NORM_CONST=0.4
-export RGB_MA_KERNEL=5
+export RGB_MA_KERNEL=25
 
-for PRED_LEN in 96 192 336 720; do
+for PRED_LEN in 96 ; do
     python -u run.py \
     --task_name long_term_forecast \
     --is_training 1 \
@@ -29,5 +29,5 @@ for PRED_LEN in 96 192 336 720; do
     --align_const $ALIGN_CONST \
     --rgb_mode decomposition \
     --rgb_ma_kernel $RGB_MA_KERNEL \
-    --rgb_channel_scales 1.0 1.0 1.0
+    --rgb_channel_scales 1.0 0.5 0.1
 done;
