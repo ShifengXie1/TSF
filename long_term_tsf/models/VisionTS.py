@@ -1,9 +1,35 @@
-
+import importlib.util
+import inspect
 import sys
-sys.path.append("../")
+from pathlib import Path
 
 from torch import nn
-from visionts import VisionTS
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_local_visionts():
+    module_name = 'visionts_local'
+    if module_name in sys.modules:
+        return sys.modules[module_name]
+
+    package_dir = REPO_ROOT / 'visionts'
+    init_path = package_dir / '__init__.py'
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        init_path,
+        submodule_search_locations=[str(package_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load local visionts package from {init_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+VisionTS = _load_local_visionts().VisionTS
 
 class Model(nn.Module):
 
@@ -17,14 +43,27 @@ class Model(nn.Module):
         self.pred_len = config.pred_len
         self.seq_len = config.seq_len
 
+        visionts_signature = inspect.signature(VisionTS.__init__).parameters
+        supports_rgb_rendering = 'rgb_mode' in visionts_signature
+        if config.rgb_mode != 'duplicate' and not supports_rgb_rendering:
+            raise RuntimeError(
+                "The local VisionTS source does not support rgb_mode. "
+                "Please sync the updated visionts/model.py to the server."
+            )
+
         self.vm = VisionTS(
             arch=config.vm_arch,
             finetune_type=config.ft_type,
             load_ckpt=config.vm_pretrained == 1,
             ckpt_dir=config.vm_ckpt,
-            rgb_mode=config.rgb_mode,
-            rgb_ma_kernel=config.rgb_ma_kernel,
-            rgb_channel_scales=tuple(config.rgb_channel_scales),
+            **(
+                {
+                    'rgb_mode': config.rgb_mode,
+                    'rgb_ma_kernel': config.rgb_ma_kernel,
+                    'rgb_channel_scales': tuple(config.rgb_channel_scales),
+                }
+                if supports_rgb_rendering else {}
+            ),
         )
 
         self.vm.update_config(context_len=config.seq_len, pred_len=config.pred_len, periodicity=config.periodicity, interpolation=config.interpolation, norm_const=config.norm_const, align_const=config.align_const)
