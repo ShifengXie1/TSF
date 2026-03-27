@@ -12,7 +12,7 @@ import numpy as np
 
 def build_setting(args, ii):
     if args.save_dir != '.':
-        return f'run_{ii}'
+        return f'{args.model_id}_run_{ii}'
     return '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
         args.task_name,
         args.model_id,

@@ -204,9 +204,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         preds = []
         trues = []
-        folder_path = f'{self.args.save_dir}/test_results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
 
         self.model.eval()
         with torch.no_grad():
@@ -267,12 +264,23 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
-        f = open("result_long_term_forecast.txt", 'a')
-        f.write(setting + "  \n")
-        f.write('mse:{}, mae:{}'.format(mse, mae))
-        f.write('\n')
-        f.write('\n')
-        f.close()
+        summary_path = os.path.join(folder_path, 'summary.txt')
+        with open(summary_path, 'w') as f:
+            f.write(f'setting: {setting}\n')
+            f.write(f'model_id: {self.args.model_id}\n')
+            f.write(f'pred_len: {self.args.pred_len}\n')
+            f.write(f'mse: {mse}\n')
+            f.write(f'mae: {mae}\n')
+            f.write(f'rmse: {rmse}\n')
+            f.write(f'mape: {mape}\n')
+            f.write(f'mspe: {mspe}\n')
+            f.write(f'best_valid_loss: {best_valid_loss}\n')
+            f.write(f'best_valid_epoch: {best_valid_epoch}\n')
+
+        result_log_path = os.path.join(self.args.save_dir, 'result_long_term_forecast.txt')
+        with open(result_log_path, 'a') as f:
+            f.write(f'{setting}\n')
+            f.write(f'pred_len:{self.args.pred_len}, mse:{mse}, mae:{mae}\n\n')
 
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe, best_valid_loss, best_valid_epoch]))
         np.save(folder_path + 'pred.npy', preds)
