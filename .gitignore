@@ -12,3 +12,5 @@ setup.py
 long_term_tsf/data/
 ckpt/
 .idea/
+save/
+result_long_term_forecast.txt
