@@ -17,7 +17,15 @@ class Model(nn.Module):
         self.pred_len = config.pred_len
         self.seq_len = config.seq_len
 
-        self.vm = VisionTS(arch=config.vm_arch, finetune_type=config.ft_type, load_ckpt=config.vm_pretrained == 1, ckpt_dir=config.vm_ckpt)
+        self.vm = VisionTS(
+            arch=config.vm_arch,
+            finetune_type=config.ft_type,
+            load_ckpt=config.vm_pretrained == 1,
+            ckpt_dir=config.vm_ckpt,
+            rgb_mode=config.rgb_mode,
+            rgb_ma_kernel=config.rgb_ma_kernel,
+            rgb_channel_scales=tuple(config.rgb_channel_scales),
+        )
 
         self.vm.update_config(context_len=config.seq_len, pred_len=config.pred_len, periodicity=config.periodicity, interpolation=config.interpolation, norm_const=config.norm_const, align_const=config.align_const)
 

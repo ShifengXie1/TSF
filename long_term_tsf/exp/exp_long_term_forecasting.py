@@ -19,6 +19,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
 
+    def _checkpoint_dir(self, setting):
+        return os.path.join(self.args.save_dir, self.args.checkpoints, setting)
+
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
 
@@ -83,7 +86,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         vali_data, vali_loader = self._get_data(flag='val')
         test_data, test_loader = self._get_data(flag='test')
 
-        path = os.path.join(self.args.save_dir, self.args.checkpoints, setting)
+        path = self._checkpoint_dir(setting)
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -183,11 +186,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def test(self, setting, test=0):
         test_data, test_loader = self._get_data(flag='test')
+        checkpoint_dir = self._checkpoint_dir(setting)
         if test:
             print('loading model')
-            self.model.load_state_dict(torch.load(os.path.join(f'{self.args.save_dir}/checkpoints/' + setting, 'checkpoint.pth')))
+            self.model.load_state_dict(torch.load(os.path.join(checkpoint_dir, 'checkpoint.pth')))
 
-        valid_loss_path = os.path.join(f'{self.args.save_dir}/checkpoints/' + setting, 'valid_loss.json')
+        valid_loss_path = os.path.join(checkpoint_dir, 'valid_loss.json')
         if os.path.isfile(valid_loss_path):
             with open(valid_loss_path) as f:
                 valid_loss = json.load(f)

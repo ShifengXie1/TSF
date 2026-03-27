@@ -9,7 +9,6 @@ from torch import nn
 from PIL import Image
 from . import util
 
-from huggingface_hub import snapshot_download
 import os
 from pathlib import Path
 
@@ -23,13 +22,31 @@ MAE_DOWNLOAD_URL = "https://dl.fbaipublicfiles.com/mae/visualize/"
 
 class VisionTS(nn.Module):
 
-    def __init__(self, arch='mae_base', finetune_type='ln', ckpt_dir='./ckpt/', load_ckpt=True):
+    def __init__(
+        self,
+        arch='mae_base',
+        finetune_type='ln',
+        ckpt_dir='./ckpt/',
+        load_ckpt=True,
+        rgb_mode='duplicate',
+        rgb_ma_kernel=5,
+        rgb_channel_scales=(1.0, 1.0, 1.0),
+    ):
         super(VisionTS, self).__init__()
 
         if arch not in MAE_ARCH:
             raise ValueError(f"Unknown arch: {arch}. Should be in {list(MAE_ARCH.keys())}")
+        if rgb_mode not in {'duplicate', 'decomposition'}:
+            raise ValueError("rgb_mode should be 'duplicate' or 'decomposition'")
+        if len(rgb_channel_scales) != 3:
+            raise ValueError("rgb_channel_scales should contain three values for R/G/B")
+        if any(float(scale) == 0.0 for scale in rgb_channel_scales):
+            raise ValueError("rgb_channel_scales should be non-zero to keep rgb decoding invertible")
 
         self.vision_model = MAE_ARCH[arch][0]()
+        self.rgb_mode = rgb_mode
+        self.rgb_ma_kernel = rgb_ma_kernel
+        self.rgb_channel_scales = tuple(float(scale) for scale in rgb_channel_scales)
 
         if load_ckpt:
             ckpt_path = os.path.join(ckpt_dir, MAE_ARCH[arch][1])
@@ -54,6 +71,65 @@ class VisionTS(nn.Module):
                     param.requires_grad = '.mlp.' in n
                 elif 'attn' in finetune_type:
                     param.requires_grad = '.attn.' in n
+
+
+    def _resolve_rgb_kernel(self, num_periods):
+        if num_periods <= 1:
+            return 1
+
+        kernel = min(max(int(self.rgb_ma_kernel), 1), int(num_periods))
+        if kernel % 2 == 0:
+            kernel -= 1
+        return max(kernel, 1)
+
+
+    def _build_duplicate_image(self, x_resize, masked):
+        x_concat_with_masked = torch.cat([x_resize, masked], dim=-1)
+        return einops.repeat(x_concat_with_masked, 'b 1 h w -> b c h w', c=3)
+
+
+    def _build_decomposition_image(self, x_2d, masked):
+        kernel = self._resolve_rgb_kernel(x_2d.shape[-1])
+        x_1d = einops.rearrange(x_2d, 'b 1 f p -> (b f) 1 p')
+
+        if kernel == 1:
+            trend = x_1d
+        else:
+            pad = (kernel - 1) // 2
+            trend = F.avg_pool1d(F.pad(x_1d, (pad, pad), mode='replicate'), kernel_size=kernel, stride=1)
+
+        trend = einops.rearrange(trend, '(b f) 1 p -> b 1 f p', b=x_2d.shape[0], f=x_2d.shape[2])
+        seasonal = (x_2d - trend).mean(dim=-1, keepdim=True).expand_as(x_2d)
+        residual = x_2d - trend - seasonal
+
+        rgb_channels = []
+        for component, scale in zip((trend, seasonal, residual), self.rgb_channel_scales):
+            component_resize = self.input_resize(component) * scale
+            rgb_channels.append(torch.cat([component_resize, masked], dim=-1))
+
+        return torch.cat(rgb_channels, dim=1)
+
+
+    def _build_image_input(self, x_2d):
+        masked = torch.zeros(
+            (x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size),
+            device=x_2d.device,
+            dtype=x_2d.dtype,
+        )
+
+        if self.rgb_mode == 'duplicate':
+            x_resize = self.input_resize(x_2d)
+            return self._build_duplicate_image(x_resize, masked)
+
+        return self._build_decomposition_image(x_2d, masked)
+
+
+    def _reconstruct_signal_image(self, image_reconstructed):
+        if self.rgb_mode == 'duplicate':
+            return torch.mean(image_reconstructed, 1, keepdim=True)
+
+        scales = image_reconstructed.new_tensor(self.rgb_channel_scales).view(1, 3, 1, 1)
+        return torch.sum(image_reconstructed / scales, dim=1, keepdim=True)
 
     
     def update_config(self, context_len, pred_len, periodicity=1, norm_const=0.4, align_const=0.4, interpolation='bilinear'):
@@ -118,13 +194,7 @@ class VisionTS(nn.Module):
         x_2d = einops.rearrange(x_pad, 'b n (p f) -> (b n) 1 f p', f=self.periodicity)
 
         # 3. Render & Alignment
-        x_resize = self.input_resize(x_2d)
-        masked = torch.zeros((x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size), device=x_2d.device, dtype=x_2d.dtype)
-        x_concat_with_masked = torch.cat([
-            x_resize, 
-            masked
-        ], dim=-1)
-        image_input = einops.repeat(x_concat_with_masked, 'b 1 h w -> b c h w', c=3)
+        image_input = self._build_image_input(x_2d)
 
         # 4. Reconstruction
         _, y, mask = self.vision_model(
@@ -134,7 +204,7 @@ class VisionTS(nn.Module):
         image_reconstructed = self.vision_model.unpatchify(y) # [(bs x nvars) x 3 x h x w]
         
         # 5. Forecasting
-        y_grey = torch.mean(image_reconstructed, 1, keepdim=True) # color image to grey
+        y_grey = self._reconstruct_signal_image(image_reconstructed)
         y_segmentations = self.output_resize(y_grey) # resize back
         y_flatten = einops.rearrange(
             y_segmentations, 
@@ -184,6 +254,12 @@ class VisionTSpp(nn.Module):
                 ckpt_path = os.path.join(ckpt_dir, "visiontspp_model.ckpt")
             
             if not os.path.isfile(ckpt_path):
+                try:
+                    from huggingface_hub import snapshot_download
+                except ImportError as exc:
+                    raise ImportError(
+                        "huggingface_hub is required to download VisionTS++ checkpoints automatically."
+                    ) from exc
                 # local directory to save the model
                 local_dir = Path(ckpt_path).parent
 

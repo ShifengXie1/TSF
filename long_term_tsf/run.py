@@ -10,6 +10,30 @@ from utils.print_args import print_args
 import random
 import numpy as np
 
+def build_setting(args, ii):
+    if args.save_dir != '.':
+        return f'run_{ii}'
+    return '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
+        args.task_name,
+        args.model_id,
+        args.model,
+        args.data,
+        args.features,
+        args.seq_len,
+        args.label_len,
+        args.pred_len,
+        args.d_model,
+        args.n_heads,
+        args.e_layers,
+        args.d_layers,
+        args.d_ff,
+        args.factor,
+        args.embed,
+        args.distil,
+        args.des,
+        ii
+    )
+
 if __name__ == '__main__':
     # fix_seed = 2021
     # random.seed(fix_seed)
@@ -106,10 +130,19 @@ if __name__ == '__main__':
     parser.add_argument('--interpolation', type=str, default='bilinear')
     parser.add_argument('--norm_const', type=float, default=0.4)
     parser.add_argument('--align_const', type=float, default=0.4)
+    parser.add_argument('--rgb_mode', type=str, default='duplicate',
+                        help="image rendering mode for VisionTS, options:['duplicate', 'decomposition']")
+    parser.add_argument('--rgb_ma_kernel', type=int, default=5,
+                        help='moving-average kernel used by decomposition rgb mode')
+    parser.add_argument('--rgb_channel_scales', type=float, nargs=3, default=[1.0, 1.0, 1.0],
+                        help='channel scaling factors for R/G/B when rgb_mode=decomposition')
 
 
     args = parser.parse_args()
     args.use_gpu = True if torch.cuda.is_available() and args.use_gpu else False
+
+    if args.model == 'VisionTS' and args.periodicity <= 0:
+        raise ValueError("VisionTS requires --periodicity > 0 for time-series-to-image segmentation")
 
     if args.use_gpu and args.use_multi_gpu:
         args.devices = args.devices.replace(' ', '')
@@ -137,27 +170,7 @@ if __name__ == '__main__':
         for ii in range(args.itr):
             # setting record of experiments
             exp = Exp(args)  # set experiments
-            if args.save_dir != '.':
-                setting = '_'
-            else:
-                setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
-                    args.task_name,
-                    args.model_id,
-                    args.model,
-                    args.data,
-                    args.features,
-                    args.seq_len,
-                    args.label_len,
-                    args.pred_len,
-                    args.d_model,
-                    args.n_heads,
-                    args.e_layers,
-                    args.d_layers,
-                    args.d_ff,
-                    args.factor,
-                    args.embed,
-                    args.distil,
-                args.des, ii)
+            setting = build_setting(args, ii)
 
             print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
             exp.train(setting)
@@ -167,24 +180,7 @@ if __name__ == '__main__':
             torch.cuda.empty_cache()
     else:
         ii = 0
-        setting = '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
-            args.task_name,
-            args.model_id,
-            args.model,
-            args.data,
-            args.features,
-            args.seq_len,
-            args.label_len,
-            args.pred_len,
-            args.d_model,
-            args.n_heads,
-            args.e_layers,
-            args.d_layers,
-            args.d_ff,
-            args.factor,
-            args.embed,
-            args.distil,
-            args.des, ii)
+        setting = build_setting(args, ii)
 
         exp = Exp(args)  # set experiments
         print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
