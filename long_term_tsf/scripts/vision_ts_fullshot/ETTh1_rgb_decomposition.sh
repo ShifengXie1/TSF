@@ -27,7 +27,7 @@ for PRED_LEN in 96 ; do
     --pred_len $PRED_LEN \
     --norm_const $NORM_CONST \
     --align_const $ALIGN_CONST \
-    --rgb_mode decomposition \
+    --rgb_mode duplicate \
     --rgb_ma_kernel $RGB_MA_KERNEL \
     --rgb_channel_scales 1.0 0.5 0.1
 done;
