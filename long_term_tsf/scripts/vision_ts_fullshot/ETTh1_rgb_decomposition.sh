@@ -10,7 +10,7 @@ export RGB_MA_KERNEL=25
 export RGB_DYNAMIC_SCALE_MODE="sample"
 export RGB_SCALE_EPS=1e-5
 
-for PRED_LEN in 96 ; do
+for PRED_LEN in 96 192 336 720 ; do
     python -u run.py \
     --task_name long_term_forecast \
     --is_training 1 \
@@ -21,7 +21,7 @@ for PRED_LEN in 96 ; do
     --model_id VisionTSRGB_ETTh1_$PRED_LEN \
     --data ETTh1 \
     --features M \
-    --train_epochs 10 \
+    --train_epochs 1 \
     --vm_arch $VM_ARCH \
     --vm_ckpt $CKPT_DIR \
     --seq_len $CONTEXT_LEN \

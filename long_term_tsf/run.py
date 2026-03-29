@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime
 import os
 import torch
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
@@ -10,9 +11,16 @@ from utils.print_args import print_args
 import random
 import numpy as np
 
+
+def build_run_tag(ii):
+    timestamp = datetime.now().strftime('%y%m%d_%H%M%S')
+    return f'{timestamp}_i{ii}'
+
+
 def build_setting(args, ii):
+    run_tag = build_run_tag(ii)
     if args.save_dir != '.':
-        return f'{args.model_id}_run_{ii}'
+        return f'{args.model_id}_{run_tag}'
     return '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
         args.task_name,
         args.model_id,
@@ -31,7 +39,7 @@ def build_setting(args, ii):
         args.embed,
         args.distil,
         args.des,
-        ii
+        run_tag
     )
 
 if __name__ == '__main__':
