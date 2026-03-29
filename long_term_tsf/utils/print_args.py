@@ -57,3 +57,14 @@ def print_args(args):
     p_hidden_dims_str = ', '.join(map(str, args.p_hidden_dims))
     print(f'  {"P Hidden Dims:":<20}{p_hidden_dims_str:<20}{"P Hidden Layers:":<20}{args.p_hidden_layers:<20}') 
     print()
+
+    if args.model == 'VisionTS':
+        print("\033[1m" + "VisionTS" + "\033[0m")
+        rgb_channel_scales_str = ', '.join(map(str, args.rgb_channel_scales))
+        print(f'  {"VM Arch:":<20}{args.vm_arch:<20}{"FT Type:":<20}{args.ft_type:<20}')
+        print(f'  {"Periodicity:":<20}{args.periodicity:<20}{"Interpolation:":<20}{args.interpolation:<20}')
+        print(f'  {"Norm Const:":<20}{args.norm_const:<20}{"Align Const:":<20}{args.align_const:<20}')
+        print(f'  {"RGB Mode:":<20}{args.rgb_mode:<20}{"RGB MA Kernel:":<20}{args.rgb_ma_kernel:<20}')
+        print(f'  {"RGB Scales:":<20}{rgb_channel_scales_str:<20}{"Scale Mode:":<20}{args.rgb_dynamic_scale_mode:<20}')
+        print(f'  {"Scale Eps:":<20}{args.rgb_scale_eps:<20}')
+        print()

@@ -31,6 +31,8 @@ class VisionTS(nn.Module):
         rgb_mode='duplicate',
         rgb_ma_kernel=5,
         rgb_channel_scales=(1.0, 1.0, 1.0),
+        rgb_dynamic_scale_mode='none',
+        rgb_scale_eps=1e-5,
     ):
         super(VisionTS, self).__init__()
 
@@ -38,15 +40,21 @@ class VisionTS(nn.Module):
             raise ValueError(f"Unknown arch: {arch}. Should be in {list(MAE_ARCH.keys())}")
         if rgb_mode not in {'duplicate', 'decomposition'}:
             raise ValueError("rgb_mode should be 'duplicate' or 'decomposition'")
+        if rgb_dynamic_scale_mode not in {'none', 'batch', 'sample'}:
+            raise ValueError("rgb_dynamic_scale_mode should be 'none', 'batch', or 'sample'")
         if len(rgb_channel_scales) != 3:
             raise ValueError("rgb_channel_scales should contain three values for R/G/B")
         if any(float(scale) == 0.0 for scale in rgb_channel_scales):
             raise ValueError("rgb_channel_scales should be non-zero to keep rgb decoding invertible")
+        if rgb_scale_eps <= 0.0:
+            raise ValueError("rgb_scale_eps should be positive")
 
         self.vision_model = MAE_ARCH[arch][0]()
         self.rgb_mode = rgb_mode
         self.rgb_ma_kernel = rgb_ma_kernel
         self.rgb_channel_scales = tuple(float(scale) for scale in rgb_channel_scales)
+        self.rgb_dynamic_scale_mode = rgb_dynamic_scale_mode
+        self.rgb_scale_eps = float(rgb_scale_eps)
 
         if load_ckpt:
             ckpt_path = os.path.join(ckpt_dir, MAE_ARCH[arch][1])
@@ -85,7 +93,21 @@ class VisionTS(nn.Module):
 
     def _build_duplicate_image(self, x_resize, masked):
         x_concat_with_masked = torch.cat([x_resize, masked], dim=-1)
-        return einops.repeat(x_concat_with_masked, 'b 1 h w -> b c h w', c=3)
+        image_input = einops.repeat(x_concat_with_masked, 'b 1 h w -> b c h w', c=3)
+        return image_input, None
+
+
+    def _compute_dynamic_rgb_scale(self, component_resize, base_scale):
+        scale = component_resize.new_full((component_resize.shape[0], 1, 1, 1), float(base_scale))
+        if self.rgb_dynamic_scale_mode == 'none':
+            return scale
+
+        reduce_dims = (-2, -1) if self.rgb_dynamic_scale_mode == 'sample' else (0, -2, -1)
+        sigma = torch.sqrt(
+            torch.var(component_resize.to(torch.float32), dim=reduce_dims, keepdim=True, unbiased=False)
+        )
+        dynamic_scale = torch.reciprocal(sigma + self.rgb_scale_eps).to(component_resize.dtype)
+        return dynamic_scale * scale
 
 
     def _build_decomposition_image(self, x_2d, masked):
@@ -102,12 +124,15 @@ class VisionTS(nn.Module):
         seasonal = (x_2d - trend).mean(dim=-1, keepdim=True).expand_as(x_2d)
         residual = x_2d - trend - seasonal
 
+        resized_components = [self.input_resize(component) for component in (trend, seasonal, residual)]
         rgb_channels = []
-        for component, scale in zip((trend, seasonal, residual), self.rgb_channel_scales):
-            component_resize = self.input_resize(component) * scale
-            rgb_channels.append(torch.cat([component_resize, masked], dim=-1))
+        channel_scales = []
+        for component_resize, base_scale in zip(resized_components, self.rgb_channel_scales):
+            scale = self._compute_dynamic_rgb_scale(component_resize, base_scale)
+            channel_scales.append(scale)
+            rgb_channels.append(torch.cat([component_resize * scale, masked], dim=-1))
 
-        return torch.cat(rgb_channels, dim=1)
+        return torch.cat(rgb_channels, dim=1), torch.cat(channel_scales, dim=1)
 
 
     def _build_image_input(self, x_2d):
@@ -124,12 +149,13 @@ class VisionTS(nn.Module):
         return self._build_decomposition_image(x_2d, masked)
 
 
-    def _reconstruct_signal_image(self, image_reconstructed):
+    def _reconstruct_signal_image(self, image_reconstructed, channel_scales=None):
         if self.rgb_mode == 'duplicate':
             return torch.mean(image_reconstructed, 1, keepdim=True)
 
-        scales = image_reconstructed.new_tensor(self.rgb_channel_scales).view(1, 3, 1, 1)
-        return torch.sum(image_reconstructed / scales, dim=1, keepdim=True)
+        if channel_scales is None:
+            channel_scales = image_reconstructed.new_tensor(self.rgb_channel_scales).view(1, 3, 1, 1)
+        return torch.sum(image_reconstructed / channel_scales, dim=1, keepdim=True)
 
     
     def update_config(self, context_len, pred_len, periodicity=1, norm_const=0.4, align_const=0.4, interpolation='bilinear'):
@@ -194,7 +220,7 @@ class VisionTS(nn.Module):
         x_2d = einops.rearrange(x_pad, 'b n (p f) -> (b n) 1 f p', f=self.periodicity)
 
         # 3. Render & Alignment
-        image_input = self._build_image_input(x_2d)
+        image_input, channel_scales = self._build_image_input(x_2d)
 
         # 4. Reconstruction
         _, y, mask = self.vision_model(
@@ -204,7 +230,7 @@ class VisionTS(nn.Module):
         image_reconstructed = self.vision_model.unpatchify(y) # [(bs x nvars) x 3 x h x w]
         
         # 5. Forecasting
-        y_grey = self._reconstruct_signal_image(image_reconstructed)
+        y_grey = self._reconstruct_signal_image(image_reconstructed, channel_scales)
         y_segmentations = self.output_resize(y_grey) # resize back
         y_flatten = einops.rearrange(
             y_segmentations, 

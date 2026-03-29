@@ -45,10 +45,33 @@ class Model(nn.Module):
 
         visionts_signature = inspect.signature(VisionTS.__init__).parameters
         supports_rgb_rendering = 'rgb_mode' in visionts_signature
+        supports_dynamic_rgb_scaling = 'rgb_dynamic_scale_mode' in visionts_signature and 'rgb_scale_eps' in visionts_signature
         if config.rgb_mode != 'duplicate' and not supports_rgb_rendering:
             raise RuntimeError(
                 "The local VisionTS source does not support rgb_mode. "
                 "Please sync the updated visionts/model.py to the server."
+            )
+        if config.rgb_dynamic_scale_mode != 'none' and not supports_dynamic_rgb_scaling:
+            raise RuntimeError(
+                "The local VisionTS source does not support rgb_dynamic_scale_mode. "
+                "Please sync the updated visionts/model.py to the server."
+            )
+
+        visionts_kwargs = {}
+        if supports_rgb_rendering:
+            visionts_kwargs.update(
+                {
+                    'rgb_mode': config.rgb_mode,
+                    'rgb_ma_kernel': config.rgb_ma_kernel,
+                    'rgb_channel_scales': tuple(config.rgb_channel_scales),
+                }
+            )
+        if supports_dynamic_rgb_scaling:
+            visionts_kwargs.update(
+                {
+                    'rgb_dynamic_scale_mode': config.rgb_dynamic_scale_mode,
+                    'rgb_scale_eps': config.rgb_scale_eps,
+                }
             )
 
         self.vm = VisionTS(
@@ -56,14 +79,7 @@ class Model(nn.Module):
             finetune_type=config.ft_type,
             load_ckpt=config.vm_pretrained == 1,
             ckpt_dir=config.vm_ckpt,
-            **(
-                {
-                    'rgb_mode': config.rgb_mode,
-                    'rgb_ma_kernel': config.rgb_ma_kernel,
-                    'rgb_channel_scales': tuple(config.rgb_channel_scales),
-                }
-                if supports_rgb_rendering else {}
-            ),
+            **visionts_kwargs,
         )
 
         self.vm.update_config(context_len=config.seq_len, pred_len=config.pred_len, periodicity=config.periodicity, interpolation=config.interpolation, norm_const=config.norm_const, align_const=config.align_const)

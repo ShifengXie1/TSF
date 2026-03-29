@@ -136,6 +136,10 @@ if __name__ == '__main__':
                         help='moving-average kernel used by decomposition rgb mode')
     parser.add_argument('--rgb_channel_scales', type=float, nargs=3, default=[1.0, 1.0, 1.0],
                         help='channel scaling factors for R/G/B when rgb_mode=decomposition')
+    parser.add_argument('--rgb_dynamic_scale_mode', type=str, default='none',
+                        help="dynamic rgb channel scaling mode, options:['none', 'batch', 'sample']")
+    parser.add_argument('--rgb_scale_eps', type=float, default=1e-5,
+                        help='epsilon used by dynamic rgb channel scaling')
 
 
     args = parser.parse_args()

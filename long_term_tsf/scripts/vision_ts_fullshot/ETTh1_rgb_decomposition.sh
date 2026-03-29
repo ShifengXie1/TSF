@@ -7,6 +7,8 @@ export PERIODICITY=24
 export ALIGN_CONST=0.4
 export NORM_CONST=0.4
 export RGB_MA_KERNEL=25
+export RGB_DYNAMIC_SCALE_MODE="sample"
+export RGB_SCALE_EPS=1e-5
 
 for PRED_LEN in 96 ; do
     python -u run.py \
@@ -27,7 +29,9 @@ for PRED_LEN in 96 ; do
     --pred_len $PRED_LEN \
     --norm_const $NORM_CONST \
     --align_const $ALIGN_CONST \
-    --rgb_mode duplicate \
+    --rgb_mode decomposition \
     --rgb_ma_kernel $RGB_MA_KERNEL \
-    --rgb_channel_scales 1.0 0.5 0.1
+    --rgb_channel_scales 1.0 1.0 1.0 \
+    --rgb_dynamic_scale_mode $RGB_DYNAMIC_SCALE_MODE \
+    --rgb_scale_eps $RGB_SCALE_EPS
 done;
