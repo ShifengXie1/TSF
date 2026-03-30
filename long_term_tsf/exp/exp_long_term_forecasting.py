@@ -19,6 +19,39 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
 
+    def _build_summary_lines(self, setting, metrics, best_valid_loss, best_valid_epoch):
+        mae, mse, rmse, mape, mspe = metrics
+        lines = [
+            f'setting: {setting}',
+            f'model_id: {self.args.model_id}',
+            f'data: {self.args.data}',
+            f'seq_len: {self.args.seq_len}',
+            f'pred_len: {self.args.pred_len}',
+            f'batch_size: {self.args.batch_size}',
+            f'train_epochs: {self.args.train_epochs}',
+            f'learning_rate: {self.args.learning_rate}',
+            f'mse: {mse}',
+            f'mae: {mae}',
+            f'best_valid_loss: {best_valid_loss}',
+            f'best_valid_epoch: {best_valid_epoch}',
+        ]
+
+        if self.args.model == 'VisionTS':
+            lines.extend([
+                f'vm_arch: {self.args.vm_arch}',
+                f'periodicity: {self.args.periodicity}',
+                f'rgb_mode: {self.args.rgb_mode}',
+            ])
+            if self.args.rgb_mode == 'decomposition':
+                lines.extend([
+                    f'rgb_ma_kernel: {self.args.rgb_ma_kernel}',
+                    f'rgb_channel_scales: {list(self.args.rgb_channel_scales)}',
+                    f'rgb_dynamic_scale_mode: {self.args.rgb_dynamic_scale_mode}',
+                    f'rgb_scale_eps: {self.args.rgb_scale_eps}',
+                ])
+
+        return lines
+
     def _checkpoint_dir(self, setting):
         return os.path.join(self.args.save_dir, self.args.checkpoints, setting)
 
@@ -265,17 +298,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))
         summary_path = os.path.join(folder_path, 'summary.txt')
+        summary_lines = self._build_summary_lines(
+            setting,
+            (mae, mse, rmse, mape, mspe),
+            best_valid_loss,
+            best_valid_epoch,
+        )
         with open(summary_path, 'w') as f:
-            f.write(f'setting: {setting}\n')
-            f.write(f'model_id: {self.args.model_id}\n')
-            f.write(f'pred_len: {self.args.pred_len}\n')
-            f.write(f'mse: {mse}\n')
-            f.write(f'mae: {mae}\n')
-            f.write(f'rmse: {rmse}\n')
-            f.write(f'mape: {mape}\n')
-            f.write(f'mspe: {mspe}\n')
-            f.write(f'best_valid_loss: {best_valid_loss}\n')
-            f.write(f'best_valid_epoch: {best_valid_epoch}\n')
+            f.write('\n'.join(summary_lines) + '\n')
 
         result_log_path = os.path.join(self.args.save_dir, 'result_long_term_forecast.txt')
         with open(result_log_path, 'a') as f:
