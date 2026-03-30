@@ -7,7 +7,7 @@ export PERIODICITY=24
 export ALIGN_CONST=0.4
 export NORM_CONST=0.4
 export RGB_MA_KERNEL=25
-export RGB_DYNAMIC_SCALE_MODE="sample"
+export RGB_DYNAMIC_SCALE_MODE="none"
 export RGB_SCALE_EPS=1e-5
 
 for PRED_LEN in 96 192 336 720; do
