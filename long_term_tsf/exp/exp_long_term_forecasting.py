@@ -19,10 +19,14 @@ class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
 
+    def _shot_mode(self):
+        return 'zeroshot' if self.args.train_epochs == 0 else 'fullshot'
+
     def _build_summary_lines(self, setting, metrics, best_valid_loss, best_valid_epoch):
         mae, mse, rmse, mape, mspe = metrics
         lines = [
             f'setting: {setting}',
+            f'shot_mode: {self._shot_mode()}',
             f'model_id: {self.args.model_id}',
             f'data: {self.args.data}',
             f'seq_len: {self.args.seq_len}',
@@ -310,7 +314,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         result_log_path = os.path.join(self.args.save_dir, 'result_long_term_forecast.txt')
         with open(result_log_path, 'a') as f:
             f.write(f'{setting}\n')
-            f.write(f'pred_len:{self.args.pred_len}, mse:{mse}, mae:{mae}\n\n')
+            f.write(f'shot_mode:{self._shot_mode()}, pred_len:{self.args.pred_len}, mse:{mse}, mae:{mae}\n\n')
 
         np.save(folder_path + 'metrics.npy', np.array([mae, mse, rmse, mape, mspe, best_valid_loss, best_valid_epoch]))
         np.save(folder_path + 'pred.npy', preds)

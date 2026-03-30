@@ -17,10 +17,30 @@ def build_run_tag(ii):
     return f'{timestamp}_i{ii}'
 
 
+def infer_shot_mode(args):
+    return 'zeroshot' if args.train_epochs == 0 else 'fullshot'
+
+
+def compact_model_id(args):
+    model_id_parts = args.model_id.split('_')
+    pred_len = str(args.pred_len)
+
+    if model_id_parts and model_id_parts[-1] == pred_len:
+        model_id_parts = model_id_parts[:-1]
+
+    if model_id_parts and model_id_parts[-1] == args.data:
+        model_id_parts = model_id_parts[:-1]
+
+    compact_id = '_'.join(model_id_parts).strip('_')
+    return compact_id or args.model_id
+
+
 def build_setting(args, ii):
     run_tag = build_run_tag(ii)
     if args.save_dir != '.':
-        return f'{args.model_id}_{run_tag}'
+        shot_mode = infer_shot_mode(args)
+        compact_id = compact_model_id(args)
+        return f'{compact_id}_{shot_mode}_{run_tag}'
     return '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
         args.task_name,
         args.model_id,
