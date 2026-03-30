@@ -1,4 +1,5 @@
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=0
+export OMP_NUM_THREADS=20
 export CKPT_DIR="../ckpt/"
 export VM_ARCH="mae_base"
 export CONTEXT_LEN=2880
@@ -14,7 +15,7 @@ for PRED_LEN in 96 192 336 720; do
     --task_name long_term_forecast \
     --is_training 1 \
     --model VisionTS \
-    --root_path ./dataset/ETT-small/ \
+    --root_path ./data/ETT/ \
     --data_path ETTh1.csv \
     --save_dir save/ETTh1_rgb_decomposition_$PRED_LEN \
     --model_id VisionTSRGB_ETTh1_$PRED_LEN \
