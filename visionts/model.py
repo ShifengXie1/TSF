@@ -119,6 +119,19 @@ class VisionTS(nn.Module):
         return einops.rearrange(tensor, '(b n) c h w -> b n c h w', b=batch_size, n=nvars)
 
 
+    def _expand_channel_scales_for_visualization(self, channel_scales, target_batch):
+        if channel_scales.shape[0] == target_batch:
+            return channel_scales
+
+        if channel_scales.shape[0] == 1 and self.rgb_dynamic_scale_mode in {'none', 'batch'}:
+            return channel_scales.expand(target_batch, -1, -1, -1)
+
+        raise RuntimeError(
+            f"Unexpected channel_scales shape {tuple(channel_scales.shape)} for "
+            f"rgb_dynamic_scale_mode={self.rgb_dynamic_scale_mode}. Expected first dim 1 or {target_batch}."
+        )
+
+
     def _estimate_trend_component(self, x_2d):
         kernel = self._resolve_rgb_kernel(x_2d.shape[-1])
         if kernel == 1:
@@ -217,6 +230,10 @@ class VisionTS(nn.Module):
             channel_scales = self._compute_dynamic_rgb_scales(resized_components)
 
         rendered_components = resized_components * channel_scales
+        channel_scales = self._expand_channel_scales_for_visualization(
+            channel_scales,
+            rendered_components.shape[0],
+        )
         masked = torch.zeros(
             (x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size),
             device=x_2d.device,
@@ -233,7 +250,7 @@ class VisionTS(nn.Module):
             'raw_components': self._reshape_visual_tensor(raw_components, batch_size, nvars),
             'resized_components': self._reshape_visual_tensor(resized_components, batch_size, nvars),
             'rendered_components': self._reshape_visual_tensor(rendered_components, batch_size, nvars),
-            'channel_scales': self._reshape_visual_tensor(channel_scales.expand(-1, -1, self.image_size, resized_components.shape[-1]), batch_size, nvars)[..., :1, :1],
+            'channel_scales': self._reshape_visual_tensor(channel_scales, batch_size, nvars),
             'image_input': self._reshape_visual_tensor(image_input, batch_size, nvars),
         }
 
