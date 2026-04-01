@@ -168,6 +168,12 @@ if __name__ == '__main__':
                         help="dynamic rgb channel scaling mode, options:['none', 'batch', 'sample']")
     parser.add_argument('--rgb_scale_eps', type=float, default=1e-5,
                         help='epsilon used by dynamic rgb channel scaling')
+    parser.add_argument('--export_rgb_vis', action='store_true', default=False,
+                        help='export VisionTS decomposition RGB visualizations during test')
+    parser.add_argument('--rgb_vis_max_samples', type=int, default=1,
+                        help='maximum number of batch samples to export for VisionTS RGB visualization')
+    parser.add_argument('--rgb_vis_max_vars', type=int, default=3,
+                        help='maximum number of variables per sample to export for VisionTS RGB visualization')
 
 
     args = parser.parse_args()

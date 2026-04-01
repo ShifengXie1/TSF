@@ -9,6 +9,8 @@ export NORM_CONST=0.4
 export RGB_MA_KERNEL=25
 export RGB_DYNAMIC_SCALE_MODE="none"
 export RGB_SCALE_EPS=1e-5
+export RGB_VIS_MAX_SAMPLES=1
+export RGB_VIS_MAX_VARS=3
 
 for PRED_LEN in 96 192 336 720; do
     python -u run.py \
@@ -33,5 +35,8 @@ for PRED_LEN in 96 192 336 720; do
     --rgb_ma_kernel $RGB_MA_KERNEL \
     --rgb_channel_scales 1.0 1.0 1.0 \
     --rgb_dynamic_scale_mode $RGB_DYNAMIC_SCALE_MODE \
-    --rgb_scale_eps $RGB_SCALE_EPS
+    --rgb_scale_eps $RGB_SCALE_EPS \
+    --export_rgb_vis \
+    --rgb_vis_max_samples $RGB_VIS_MAX_SAMPLES \
+    --rgb_vis_max_vars $RGB_VIS_MAX_VARS
 done;

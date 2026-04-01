@@ -97,42 +97,86 @@ class VisionTS(nn.Module):
         return image_input, None
 
 
-    def _compute_dynamic_rgb_scale(self, component_resize, base_scale):
-        scale = component_resize.new_full((component_resize.shape[0], 1, 1, 1), float(base_scale))
+    def _normalize_context(self, x, fp64=False):
+        means = x.mean(1, keepdim=True).detach()  # [bs x 1 x nvars]
+        x_enc = x - means
+        stdev = torch.sqrt(
+            torch.var(x_enc.to(torch.float64) if fp64 else x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5
+        )  # [bs x 1 x nvars]
+        stdev /= self.norm_const
+        x_enc /= stdev
+        return x_enc, means, stdev
+
+
+    def _segment_context(self, x_enc):
+        x_enc = einops.rearrange(x_enc, 'b s n -> b n s') # [bs x nvars x seq_len]
+        x_pad = F.pad(x_enc, (self.pad_left, 0), mode='replicate') # [b n s]
+        x_2d = einops.rearrange(x_pad, 'b n (p f) -> (b n) 1 f p', f=self.periodicity)
+        return x_enc, x_2d
+
+
+    def _reshape_visual_tensor(self, tensor, batch_size, nvars):
+        return einops.rearrange(tensor, '(b n) c h w -> b n c h w', b=batch_size, n=nvars)
+
+
+    def _estimate_trend_component(self, x_2d):
+        kernel = self._resolve_rgb_kernel(x_2d.shape[-1])
+        if kernel == 1:
+            return x_2d
+
+        x_1d = einops.rearrange(x_2d, 'b 1 f p -> (b f) 1 p')
+        pad = (kernel - 1) // 2
+        trend = F.avg_pool1d(F.pad(x_1d, (pad, pad), mode='replicate'), kernel_size=kernel, stride=1)
+        return einops.rearrange(trend, '(b f) 1 p -> b 1 f p', b=x_2d.shape[0], f=x_2d.shape[2])
+
+
+    def _estimate_seasonal_component(self, detrended):
+        seasonal_template = detrended.mean(dim=-1, keepdim=True)
+        # Keep the seasonal template zero-mean across one period so low-frequency level stays in trend.
+        seasonal_template = seasonal_template - seasonal_template.mean(dim=-2, keepdim=True)
+        return seasonal_template.expand_as(detrended)
+
+
+    def _decompose_input(self, x_2d):
+        work_x = x_2d.to(torch.float32) if x_2d.dtype in {torch.float16, torch.bfloat16} else x_2d
+        trend = self._estimate_trend_component(work_x)
+        detrended = work_x - trend
+        seasonal = self._estimate_seasonal_component(detrended)
+        residual = detrended - seasonal
+
+        if work_x is not x_2d:
+            trend = trend.to(x_2d.dtype)
+            seasonal = seasonal.to(x_2d.dtype)
+            residual = residual.to(x_2d.dtype)
+
+        return trend, seasonal, residual
+
+
+    def _compute_dynamic_rgb_scales(self, components_resize):
+        base_scales = components_resize.new_tensor(self.rgb_channel_scales).view(1, 3, 1, 1)
         if self.rgb_dynamic_scale_mode == 'none':
-            return scale
+            return base_scales
 
         reduce_dims = (-2, -1) if self.rgb_dynamic_scale_mode == 'sample' else (0, -2, -1)
         sigma = torch.sqrt(
-            torch.var(component_resize.to(torch.float32), dim=reduce_dims, keepdim=True, unbiased=False)
+            torch.var(components_resize.to(torch.float32), dim=reduce_dims, keepdim=True, unbiased=False)
         )
-        dynamic_scale = torch.reciprocal(sigma + self.rgb_scale_eps).to(component_resize.dtype)
-        return dynamic_scale * scale
+        dynamic_scale = torch.reciprocal(sigma + self.rgb_scale_eps).to(components_resize.dtype)
+        return dynamic_scale * base_scales
 
 
     def _build_decomposition_image(self, x_2d, masked):
-        kernel = self._resolve_rgb_kernel(x_2d.shape[-1])
-        x_1d = einops.rearrange(x_2d, 'b 1 f p -> (b f) 1 p')
-
-        if kernel == 1:
-            trend = x_1d
-        else:
-            pad = (kernel - 1) // 2
-            trend = F.avg_pool1d(F.pad(x_1d, (pad, pad), mode='replicate'), kernel_size=kernel, stride=1)
-
-        trend = einops.rearrange(trend, '(b f) 1 p -> b 1 f p', b=x_2d.shape[0], f=x_2d.shape[2])
-        seasonal = (x_2d - trend).mean(dim=-1, keepdim=True).expand_as(x_2d)
-        residual = x_2d - trend - seasonal
-
-        resized_components = [self.input_resize(component) for component in (trend, seasonal, residual)]
-        rgb_channels = []
-        channel_scales = []
-        for component_resize, base_scale in zip(resized_components, self.rgb_channel_scales):
-            scale = self._compute_dynamic_rgb_scale(component_resize, base_scale)
-            channel_scales.append(scale)
-            rgb_channels.append(torch.cat([component_resize * scale, masked], dim=-1))
-
-        return torch.cat(rgb_channels, dim=1), torch.cat(channel_scales, dim=1)
+        trend, seasonal, residual = self._decompose_input(x_2d)
+        components_resize = torch.cat(
+            [self.input_resize(component) for component in (trend, seasonal, residual)],
+            dim=1,
+        )
+        channel_scales = self._compute_dynamic_rgb_scales(components_resize)
+        image_input = torch.cat(
+            [components_resize * channel_scales, masked.expand(-1, 3, -1, -1)],
+            dim=-1,
+        )
+        return image_input, channel_scales
 
 
     def _build_image_input(self, x_2d):
@@ -147,6 +191,51 @@ class VisionTS(nn.Module):
             return self._build_duplicate_image(x_resize, masked)
 
         return self._build_decomposition_image(x_2d, masked)
+
+
+    def export_rgb_visualization(self, x, fp64=False):
+        batch_size, _, nvars = x.shape
+        x_enc, _, _ = self._normalize_context(x, fp64=fp64)
+        _, x_2d = self._segment_context(x_enc)
+
+        component_names = ('signal', 'signal', 'signal')
+        raw_components = einops.repeat(x_2d, 'bn 1 h w -> bn c h w', c=3)
+        resized_components = torch.cat(
+            [self.input_resize(raw_components[:, idx:idx + 1]) for idx in range(raw_components.shape[1])],
+            dim=1,
+        )
+        channel_scales = resized_components.new_ones((resized_components.shape[0], 3, 1, 1))
+
+        if self.rgb_mode == 'decomposition':
+            component_names = ('trend', 'seasonal', 'residual')
+            trend, seasonal, residual = self._decompose_input(x_2d)
+            raw_components = torch.cat([trend, seasonal, residual], dim=1)
+            resized_components = torch.cat(
+                [self.input_resize(component) for component in (trend, seasonal, residual)],
+                dim=1,
+            )
+            channel_scales = self._compute_dynamic_rgb_scales(resized_components)
+
+        rendered_components = resized_components * channel_scales
+        masked = torch.zeros(
+            (x_2d.shape[0], 1, self.image_size, self.num_patch_output * self.patch_size),
+            device=x_2d.device,
+            dtype=x_2d.dtype,
+        )
+        image_input = torch.cat(
+            [rendered_components, masked.expand(-1, 3, -1, -1)],
+            dim=-1,
+        )
+
+        return {
+            'rgb_mode': self.rgb_mode,
+            'component_names': component_names,
+            'raw_components': self._reshape_visual_tensor(raw_components, batch_size, nvars),
+            'resized_components': self._reshape_visual_tensor(resized_components, batch_size, nvars),
+            'rendered_components': self._reshape_visual_tensor(rendered_components, batch_size, nvars),
+            'channel_scales': self._reshape_visual_tensor(channel_scales.expand(-1, -1, self.image_size, resized_components.shape[-1]), batch_size, nvars)[..., :1, :1],
+            'image_input': self._reshape_visual_tensor(image_input, batch_size, nvars),
+        }
 
 
     def _reconstruct_signal_image(self, image_reconstructed, channel_scales=None):
@@ -206,18 +295,10 @@ class VisionTS(nn.Module):
         # return: forecasting window, size: [bs x pred_len x nvars]
 
         # 1. Normalization
-        means = x.mean(1, keepdim=True).detach()  # [bs x 1 x nvars]
-        x_enc = x - means
-        stdev = torch.sqrt(
-            torch.var(x_enc.to(torch.float64) if fp64 else x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)  # [bs x 1 x nvars]
-        stdev /= self.norm_const
-        x_enc /= stdev
-        # Channel Independent
-        x_enc = einops.rearrange(x_enc, 'b s n -> b n s') # [bs x nvars x seq_len]
+        x_enc, means, stdev = self._normalize_context(x, fp64=fp64)
 
         # 2. Segmentation
-        x_pad = F.pad(x_enc, (self.pad_left, 0), mode='replicate') # [b n s]
-        x_2d = einops.rearrange(x_pad, 'b n (p f) -> (b n) 1 f p', f=self.periodicity)
+        x_enc, x_2d = self._segment_context(x_enc)
 
         # 3. Render & Alignment
         image_input, channel_scales = self._build_image_input(x_2d)

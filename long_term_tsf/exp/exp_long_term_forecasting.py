@@ -10,6 +10,7 @@ import time
 import warnings
 import numpy as np
 import json
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
@@ -18,6 +19,103 @@ warnings.filterwarnings('ignore')
 class Exp_Long_Term_Forecast(Exp_Basic):
     def __init__(self, args):
         super(Exp_Long_Term_Forecast, self).__init__(args)
+
+    def _unwrap_model(self):
+        return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+
+    def _channel_stats(self, channel_2d):
+        abs_channel = np.abs(channel_2d)
+        return {
+            'min': float(np.min(channel_2d)),
+            'max': float(np.max(channel_2d)),
+            'mean': float(np.mean(channel_2d)),
+            'std': float(np.std(channel_2d)),
+            'mean_abs': float(np.mean(abs_channel)),
+            'max_abs': float(np.max(abs_channel)),
+            'p95_abs': float(np.percentile(abs_channel, 95)),
+        }
+
+    def _save_rgb_visualization_figure(self, rendered_rgb, component_names, channel_scales, save_path):
+        max_abs = float(np.max(np.abs(rendered_rgb)))
+        max_abs = max(max_abs, 1e-6)
+        rgb_plot = np.clip(0.5 + rendered_rgb.transpose(1, 2, 0) / (2 * max_abs), 0.0, 1.0)
+
+        fig, axes = plt.subplots(1, 4, figsize=(18, 4))
+        axes[0].imshow(rgb_plot, aspect='auto')
+        axes[0].set_title('Rendered RGB')
+        axes[0].axis('off')
+
+        for idx, name in enumerate(component_names):
+            im = axes[idx + 1].imshow(
+                rendered_rgb[idx],
+                cmap='coolwarm',
+                vmin=-max_abs,
+                vmax=max_abs,
+                aspect='auto',
+            )
+            axes[idx + 1].set_title(f'{name}\nscale={channel_scales[idx]:.4g}')
+            axes[idx + 1].axis('off')
+            fig.colorbar(im, ax=axes[idx + 1], fraction=0.046, pad=0.04)
+
+        fig.tight_layout()
+        fig.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+
+    def _export_visionts_rgb_visualization(self, batch_x, folder_path):
+        if self.args.model != 'VisionTS' or not self.args.export_rgb_vis:
+            return
+
+        core_model = self._unwrap_model()
+        if not hasattr(core_model, 'export_rgb_visualization'):
+            return
+
+        vis_payload = core_model.export_rgb_visualization(batch_x)
+        vis_dir = os.path.join(folder_path, 'rgb_vis')
+        os.makedirs(vis_dir, exist_ok=True)
+
+        component_names = list(vis_payload['component_names'])
+        resized_components = vis_payload['resized_components'].detach().cpu().numpy()
+        rendered_components = vis_payload['rendered_components'].detach().cpu().numpy()
+        channel_scales = vis_payload['channel_scales'].detach().cpu().numpy()
+
+        max_samples = min(self.args.rgb_vis_max_samples, rendered_components.shape[0])
+        max_vars = min(self.args.rgb_vis_max_vars, rendered_components.shape[1])
+
+        summary = {
+            'rgb_mode': vis_payload['rgb_mode'],
+            'component_names': component_names,
+            'rgb_channel_scales_arg': list(self.args.rgb_channel_scales),
+            'rgb_dynamic_scale_mode': self.args.rgb_dynamic_scale_mode,
+            'items': [],
+        }
+
+        for sample_idx in range(max_samples):
+            for var_idx in range(max_vars):
+                rendered_rgb = rendered_components[sample_idx, var_idx]
+                resized_rgb = resized_components[sample_idx, var_idx]
+                applied_scales = channel_scales[sample_idx, var_idx, :, 0, 0]
+
+                self._save_rgb_visualization_figure(
+                    rendered_rgb,
+                    component_names,
+                    applied_scales,
+                    os.path.join(vis_dir, f'sample_{sample_idx:02d}_var_{var_idx:02d}.png'),
+                )
+
+                item = {
+                    'sample_index': sample_idx,
+                    'variable_index': var_idx,
+                    'channel_scales': [float(scale) for scale in applied_scales],
+                    'raw_stats': {},
+                    'rendered_stats': {},
+                }
+                for comp_idx, name in enumerate(component_names):
+                    item['raw_stats'][name] = self._channel_stats(resized_rgb[comp_idx])
+                    item['rendered_stats'][name] = self._channel_stats(rendered_rgb[comp_idx])
+                summary['items'].append(item)
+
+        with open(os.path.join(vis_dir, 'channel_stats.json'), 'w') as f:
+            json.dump(summary, f, indent=2)
 
     def _shot_mode(self):
         return 'zeroshot' if self.args.train_epochs == 0 else 'fullshot'
@@ -242,7 +340,12 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         preds = []
         trues = []
 
+        folder_path = f'{self.args.save_dir}/results/' + setting + '/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
         self.model.eval()
+        rgb_vis_exported = False
         with torch.no_grad():
             for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(tqdm(test_loader, desc='test')):
                 batch_x = batch_x.float().to(self.device)
@@ -250,6 +353,10 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
+
+                if not rgb_vis_exported:
+                    self._export_visionts_rgb_visualization(batch_x, folder_path)
+                    rgb_vis_exported = self.args.model == 'VisionTS' and self.args.export_rgb_vis
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -293,11 +400,6 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
         trues = trues.reshape(-1, trues.shape[-2], trues.shape[-1])
         print('test shape:', preds.shape, trues.shape)
-
-        # result save
-        folder_path = f'{self.args.save_dir}/results/' + setting + '/'
-        if not os.path.exists(folder_path):
-            os.makedirs(folder_path)
 
         mae, mse, rmse, mape, mspe = metric(preds, trues)
         print('mse:{}, mae:{}'.format(mse, mae))

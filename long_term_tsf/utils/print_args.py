@@ -67,4 +67,6 @@ def print_args(args):
         print(f'  {"RGB Mode:":<20}{args.rgb_mode:<20}{"RGB MA Kernel:":<20}{args.rgb_ma_kernel:<20}')
         print(f'  {"RGB Scales:":<20}{rgb_channel_scales_str:<20}{"Scale Mode:":<20}{args.rgb_dynamic_scale_mode:<20}')
         print(f'  {"Scale Eps:":<20}{args.rgb_scale_eps:<20}')
+        print(f'  {"Export RGB Vis:":<20}{args.export_rgb_vis:<20}{"Vis Samples:":<20}{args.rgb_vis_max_samples:<20}')
+        print(f'  {"Vis Vars:":<20}{args.rgb_vis_max_vars:<20}')
         print()

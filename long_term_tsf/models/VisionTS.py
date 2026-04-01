@@ -90,6 +90,10 @@ class Model(nn.Module):
         return self.vm.forward(x_enc)
 
 
+    def export_rgb_visualization(self, x_enc):
+        return self.vm.export_rgb_visualization(x_enc)
+
+
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
         raise NotImplementedError()
 
