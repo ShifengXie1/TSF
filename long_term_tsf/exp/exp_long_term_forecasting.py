@@ -10,6 +10,7 @@ import time
 import warnings
 import numpy as np
 import json
+from pathlib import Path
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -156,6 +157,21 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
     def _checkpoint_dir(self, setting):
         return os.path.join(self.args.save_dir, self.args.checkpoints, setting)
+
+    def _shared_result_log_path(self):
+        save_dir = Path(self.args.save_dir)
+        save_dir_name = save_dir.name
+        pred_suffix = f'_{self.args.pred_len}'
+
+        if save_dir_name.endswith(pred_suffix):
+            shared_dir = save_dir.parent / save_dir_name[:-len(pred_suffix)]
+            if not shared_dir.name:
+                shared_dir = save_dir.parent
+        else:
+            shared_dir = save_dir
+
+        os.makedirs(shared_dir, exist_ok=True)
+        return str(shared_dir / 'result_long_term_forecast.txt')
 
     def _build_model(self):
         model = self.model_dict[self.args.model].Model(self.args).float()
@@ -413,7 +429,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         with open(summary_path, 'w') as f:
             f.write('\n'.join(summary_lines) + '\n')
 
-        result_log_path = os.path.join(self.args.save_dir, 'result_long_term_forecast.txt')
+        result_log_path = self._shared_result_log_path()
         with open(result_log_path, 'a') as f:
             f.write(f'{setting}\n')
             f.write(f'shot_mode:{self._shot_mode()}, pred_len:{self.args.pred_len}, mse:{mse}, mae:{mae}\n\n')
