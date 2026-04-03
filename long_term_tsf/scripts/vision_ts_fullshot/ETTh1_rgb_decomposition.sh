@@ -23,7 +23,9 @@ for PRED_LEN in 96 192 336 720 ; do
     --model_id VisionTSRGB_ETTh1_$PRED_LEN \
     --data ETTh1 \
     --features M \
-    --train_epochs 1 \
+    --train_epochs 10 \
+    --batch_size_candidates 1 2 4 8 16 32 \
+    --batch_size_search_epochs 10 \
     --vm_arch $VM_ARCH \
     --vm_ckpt $CKPT_DIR \
     --seq_len $CONTEXT_LEN \

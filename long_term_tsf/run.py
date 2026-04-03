@@ -1,6 +1,9 @@
 import argparse
+import copy
 from datetime import datetime
+import json
 import os
+import shutil
 import torch
 from exp.exp_long_term_forecasting import Exp_Long_Term_Forecast
 from exp.exp_imputation import Exp_Imputation
@@ -35,12 +38,14 @@ def compact_model_id(args):
     return compact_id or args.model_id
 
 
-def build_setting(args, ii):
+def build_setting(args, ii, extra_tag=None):
     run_tag = build_run_tag(ii)
+    extra_suffix = f'_{extra_tag}' if extra_tag else ''
     if args.save_dir != '.':
         shot_mode = infer_shot_mode(args)
         compact_id = compact_model_id(args)
-        return f'{compact_id}_{shot_mode}_{run_tag}'
+        return f'{compact_id}{extra_suffix}_{shot_mode}_{run_tag}'
+    des = f'{args.des}{extra_suffix}'
     return '{}_{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_fc{}_eb{}_dt{}_{}_{}'.format(
         args.task_name,
         args.model_id,
@@ -58,9 +63,130 @@ def build_setting(args, ii):
         args.factor,
         args.embed,
         args.distil,
-        args.des,
+        des,
         run_tag
     )
+
+
+def load_best_validation_record(args, setting):
+    valid_loss_path = os.path.join(args.save_dir, args.checkpoints, setting, 'valid_loss.json')
+    if not os.path.isfile(valid_loss_path):
+        raise FileNotFoundError(f'Validation summary not found: {valid_loss_path}')
+
+    with open(valid_loss_path) as f:
+        record = json.load(f)
+
+    return record['best_valid_loss'], record['best_valid_epoch']
+
+
+def batch_size_search_summary_path(args):
+    os.makedirs(args.save_dir, exist_ok=True)
+    return os.path.join(args.save_dir, 'batch_size_search_summary.json')
+
+
+def save_batch_size_search_summary(args, search_records, best_record):
+    summary = {
+        'data': args.data,
+        'pred_len': args.pred_len,
+        'model': args.model,
+        'search_epochs': args.batch_size_search_epochs,
+        'candidates': search_records,
+        'best': best_record,
+    }
+    with open(batch_size_search_summary_path(args), 'w') as f:
+        json.dump(summary, f, indent=2)
+
+
+def save_global_best_batch_size_checkpoint(base_args, best_record, final_setting):
+    source_dir = os.path.join(base_args.save_dir, base_args.checkpoints, best_record['setting'])
+    target_dir = os.path.join(base_args.save_dir, base_args.checkpoints, final_setting)
+    os.makedirs(target_dir, exist_ok=True)
+
+    for filename in ('checkpoint.pth', 'valid_loss.json'):
+        source_path = os.path.join(source_dir, filename)
+        if not os.path.isfile(source_path):
+            raise FileNotFoundError(f'Missing search artifact: {source_path}')
+        shutil.copy2(source_path, os.path.join(target_dir, filename))
+
+    metadata = {
+        'selected_batch_size': best_record['batch_size'],
+        'source_setting': best_record['setting'],
+        'best_valid_loss': best_record['best_valid_loss'],
+        'best_valid_epoch': best_record['best_valid_epoch'],
+    }
+    with open(os.path.join(target_dir, 'batch_size_search_selection.json'), 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    return target_dir
+
+
+def run_batch_size_search(base_args, Exp, ii):
+    if base_args.task_name != 'long_term_forecast':
+        raise ValueError('Batch size search is only supported for long_term_forecast.')
+    if not base_args.batch_size_candidates:
+        raise ValueError('Batch size search requires at least one candidate batch size.')
+    if base_args.batch_size_search_epochs <= 0:
+        raise ValueError('batch_size_search_epochs must be positive.')
+
+    best_record = None
+    search_records = []
+
+    for batch_size in base_args.batch_size_candidates:
+        candidate_args = copy.deepcopy(base_args)
+        candidate_args.batch_size = batch_size
+        candidate_args.train_epochs = candidate_args.batch_size_search_epochs
+
+        exp = Exp(candidate_args)
+        setting = build_setting(candidate_args, ii, extra_tag=f'bs{batch_size}')
+
+        print('>>>>>>>start training with batch_size={} : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(batch_size, setting))
+        exp.train(setting)
+
+        best_valid_loss, best_valid_epoch = load_best_validation_record(candidate_args, setting)
+        record = {
+            'batch_size': batch_size,
+            'setting': setting,
+            'best_valid_loss': best_valid_loss,
+            'best_valid_epoch': best_valid_epoch,
+        }
+        search_records.append(record)
+        print('>>>>>>>validation result: batch_size={}, best_valid_loss={}, best_valid_epoch={}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(
+            batch_size,
+            best_valid_loss,
+            best_valid_epoch,
+        ))
+
+        if best_record is None or best_valid_loss < best_record['best_valid_loss']:
+            best_record = {
+                **record,
+                'args': candidate_args,
+            }
+
+        del exp
+        torch.cuda.empty_cache()
+
+    best_test_args = copy.deepcopy(base_args)
+    best_test_args.batch_size = best_record['batch_size']
+    best_test_args.train_epochs = best_test_args.batch_size_search_epochs
+    final_setting = build_setting(best_test_args, ii, extra_tag=f'bestbs{best_record["batch_size"]}')
+    final_checkpoint_dir = save_global_best_batch_size_checkpoint(base_args, best_record, final_setting)
+
+    summary_best_record = {k: v for k, v in best_record.items() if k != 'args'}
+    summary_best_record['final_setting'] = final_setting
+    summary_best_record['final_checkpoint_dir'] = final_checkpoint_dir
+    save_batch_size_search_summary(base_args, search_records, summary_best_record)
+
+    print('>>>>>>>selected best batch_size={} with valid_loss={} : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(
+        best_record['batch_size'],
+        best_record['best_valid_loss'],
+        final_setting,
+    ))
+
+    best_exp = Exp(best_test_args)
+    print('>>>>>>>testing best setting : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(final_setting))
+    best_exp.test(final_setting, test=1)
+    del best_exp
+    torch.cuda.empty_cache()
 
 if __name__ == '__main__':
     # fix_seed = 2021
@@ -131,6 +257,10 @@ if __name__ == '__main__':
     parser.add_argument('--itr', type=int, default=1, help='experiments times')
     parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
+    parser.add_argument('--batch_size_candidates', type=int, nargs='+', default=None,
+                        help='candidate batch sizes for validation-based search')
+    parser.add_argument('--batch_size_search_epochs', type=int, default=10,
+                        help='maximum training epochs for each candidate batch size during search')
     parser.add_argument('--patience', type=int, default=3, help='early stopping patience')
     parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
     parser.add_argument('--des', type=str, default='test', help='exp description')
@@ -206,16 +336,18 @@ if __name__ == '__main__':
 
     if args.is_training:
         for ii in range(args.itr):
-            # setting record of experiments
-            exp = Exp(args)  # set experiments
-            setting = build_setting(args, ii)
+            if args.batch_size_candidates:
+                run_batch_size_search(args, Exp, ii)
+            else:
+                exp = Exp(args)  # set experiments
+                setting = build_setting(args, ii)
 
-            print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-            exp.train(setting)
+                print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
+                exp.train(setting)
 
-            print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-            exp.test(setting)
-            torch.cuda.empty_cache()
+                print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+                exp.test(setting)
+                torch.cuda.empty_cache()
     else:
         ii = 0
         setting = build_setting(args, ii)
